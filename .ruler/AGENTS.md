@@ -53,6 +53,7 @@ use following libraries for specific functionalities:
 
 - Next.js `app` 라우터에서 `src/app/api/[[...hono]]/route.ts` 를 통해 Hono 앱을 위임한다. 모든 HTTP 메서드는 `handle(createHonoApp())` 로 노출하며 `runtime = 'nodejs'` 로 Supabase service-role 키를 사용한다.
 - `src/backend/hono/app.ts` 의 `createHonoApp` 은 싱글턴으로 관리하며 다음 빌딩블록을 순서대로 연결한다.
+- **중요**: 싱글턴 캐싱은 `process.env.NODE_ENV === 'production'` 일 때만 활성화하여 개발 환경에서 새 라우트가 hot-reload되도록 보장한다.
   1. `errorBoundary()` – 공통 에러 로깅 및 5xx 응답 정규화.
   2. `withAppContext()` – `zod` 기반 환경 변수 파싱, 콘솔 기반 logger, 설정을 `c.set` 으로 주입.
   3. `withSupabase()` – service-role 키로 생성한 Supabase 서버 클라이언트를 per-request로 주입.

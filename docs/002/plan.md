@@ -1,779 +1,980 @@
-## 최종 단순화 본(Over-Engineering 제거)
-
-- influencer-profile-form — `src/features/profiles/presentation/components/InfluencerProfileForm.tsx`
-  - 단일 폼(생년월일/채널 1~N 추가·편집·삭제), 제출 시 한 번에 저장.
-- useInfluencerProfileMutation — `src/features/profiles/presentation/hooks/useInfluencerProfileMutation.ts`
-  - mutation 1개: POST /profiles/influencer (채널 배열 포함), 성공 시 완료 토스트.
-- profiles.api — `src/features/profiles/interface/http/profiles.api.ts`
-  - axios 래퍼: saveInfluencerProfile(payload).
-- influencer.route — `src/features/profiles/interface/backend/route.ts`
-  - Hono: POST /profiles/influencer (zod 인라인, 서비스 1개 호출).
-- save-influencer-profile.service — `src/features/profiles/application/save-influencer-profile.ts`
-  - 로직: upsert profile → replace channels(트랜잭션 없이 순차, 실패 시 에러 반환).
-- profile.repo.supabase / channel.repo.supabase — `src/features/profiles/infrastructure/*`
-  - 단순 insert/update/delete 구현.
-
-```mermaid
-flowchart LR
-  UI[InfluencerProfileForm]-->Hook[useInfluencerProfileMutation]-->Api[profiles.api]
-  Api-->Route[influencer.route]-->Svc[save-influencer-profile.service]
-  Svc-->ProfRepo[profile.repo.supabase]
-  Svc-->ChanRepo[channel.repo.supabase]
-```
-
-QA / 테스트
-- QA: 미성년/URL오류/중복 채널/성공 4케이스.
-- 테스트: service happy path, URL 중복 시 409 매핑, 생년월 규칙(>=18) 실패.
-## 개요(Modules Overview)
-
-- influencer-profile-ui — `src/features/profiles/presentation/components/InfluencerProfileForm.tsx`
-  - 생년월일/채널(유형/이름/URL) 입력 폼, 로컬 검증 및 제출.
-- useInfluencerProfile — `src/features/profiles/presentation/hooks/useInfluencerProfile.ts`
-  - React Query mutation/queries: 프로필 저장, 채널 CRUD.
-- profiles-dto — `src/features/profiles/interface/http/dto.ts`
-  - 요청/응답 DTO, 에러 페이로드 타입.
-- profiles-schema — `src/features/profiles/interface/backend/schema.ts`
-  - zod 스키마 정의(프로필/채널 저장 요청/응답).
-- profiles-route — `src/features/profiles/interface/backend/route.ts`
-  - POST /profiles/influencer, POST/PUT/DELETE /profiles/influencer/channels.
-- save-influencer-profile-uc — `src/features/profiles/application/use-cases/save-influencer-profile.ts`
-  - 프로필 upsert + is_profile_complete 갱신.
-- upsert-channel-uc — `src/features/profiles/application/use-cases/upsert-influencer-channel.ts`
-  - 채널 생성/수정(verification_status=pending), 중복 가드.
-- ports — `src/features/profiles/application/ports/{influencer-profile-repo.port.ts,influencer-channel-repo.port.ts}`
-  - 저장소 추상화.
-- domain — `src/features/profiles/domain/{entities,value-objects,services}`
-  - entity: influencerProfile, influencerChannel; VO: birthDate, url; service: age policy(>=18).
-- infra — `src/features/profiles/infrastructure/repositories/{influencer-profile.repository.supabase.ts,influencer-channel.repository.supabase.ts}`
-  - Supabase 쿼리 구현.
-
-## Diagram (mermaid)
-
-```mermaid
-flowchart LR
-  subgraph Presentation
-    UI[InfluencerProfileForm.tsx]
-    Hook[useInfluencerProfile.ts]
-  end
-  subgraph Interface
-    DTO[dto.ts]
-    Schema[schema.ts]
-    Route[route.ts]
-  end
-  subgraph Application
-    SaveUC[save-influencer-profile.ts]
-    ChannelUC[upsert-influencer-channel.ts]
-    Ports[ports/*]
-  end
-  subgraph Domain
-    Entity[profile/channel]
-    VO[birthDate,url]
-    Svc[age policy]
-  end
-  subgraph Infrastructure
-    ProfRepo[influencer-profile.repository.supabase]
-    ChRepo[influencer-channel.repository.supabase]
-  end
-  UI-->Hook-->Route-->Schema
-  Route-->SaveUC
-  Route-->ChannelUC
-  SaveUC-->Ports
-  ChannelUC-->Ports
-  Ports-->ProfRepo
-  Ports-->ChRepo
-  SaveUC-->Entity
-  SaveUC-->Svc
-  ChannelUC-->VO
-```
-
-## Implementation Plan
-
-### Presentation (QA)
-- 필수 입력 미기재 시 제출 비활성/인라인 에러 노출.
-- URL 형식 오류 시 경고, 저장 시 서버 재검증 실패 메시지 표시.
-- 만 18세 미만 입력 시 제출 불가 메시지.
-- 채널 추가/편집/삭제 후 목록 즉시 동기화.
-
-### Interface
-- dto.ts: SaveInfluencerProfileRequest/Response, UpsertChannelRequest/Response.
-- schema.ts: zod로 최소 필드 검증, 에러코드 매핑(COMMON_ERROR_CODES).
-- route.ts: POST /profiles/influencer, POST/PUT/DELETE /profiles/influencer/channels.
-
-### Application (Unit Tests)
-- save-influencer-profile.spec: 생년월일 → age policy 검사, upsert 성공/실패, 완료상태 갱신.
-- upsert-influencer-channel.spec: 중복(유형+URL) 가드, status=pending 설정.
-
-### Domain
-- birthDate.vo: 나이 계산, 정책(>=18) 체크.
-- url.vo: URL 파싱/정규화.
-
-### Infrastructure
-- profile repo: upsert by user_id, is_profile_complete 갱신.
-- channel repo: insert/update, unique(influencer_id, channel_type, channel_url) 존중.
-
-# 인플루언서 정보 등록 모듈화 설계
+# UC-002: 인플루언서 정보 등록 - Implementation Plan
 
 ## 개요
 
-### 공유 모듈 (Shared Modules)
+인플루언서가 회원가입 후 프로필 정보(생년월일, SNS 채널)를 등록하는 기능을 구현합니다.
 
-#### 1. 프로필 관리 시스템 (`src/features/profiles/`)
-- **위치**: `src/features/profiles/`
-- **설명**: 인플루언서/광고주 프로필 등록 및 관리
-- **구현 상태**: ✅ 완료
-- **주요 컴포넌트**:
-  - `backend/route.ts` - 프로필 API 라우터
-  - `backend/service.ts` - 프로필 비즈니스 로직
-  - `backend/schema.ts` - 프로필 스키마 정의
-  - `backend/error.ts` - 프로필 에러 코드
+### 주요 모듈
 
-#### 2. 검증 시스템 (`src/lib/validation/`)
-- **위치**: `src/lib/validation/`
-- **설명**: Zod 기반 스키마 검증, 나이 정책, URL 검증
-- **구현 상태**: ✅ 완료
-- **주요 기능**:
-  - `validateAgePolicy()` - 만 18세 이상 검증
-  - `validateUrl()` - URL 형식 검증
-  - `influencerProfileSchema` - 인플루언서 프로필 스키마
+| 모듈 | 위치 | 설명 |
+|------|------|------|
+| **Backend API** | `src/features/influencer-profile/backend/` | 프로필 생성 및 채널 저장 API |
+| **Frontend Page** | `src/app/onboarding/influencer/` | 인플루언서 온보딩 페이지 |
+| **Components** | `src/features/influencer-profile/components/` | 폼 컴포넌트 (생년월일, 채널 관리) |
+| **Hooks** | `src/features/influencer-profile/hooks/` | React Query 훅 |
+| **Shared Constants** | `src/constants/channels.ts` | 채널 유형, URL 패턴 정의 |
+| **Shared Validation** | `src/lib/validation/` | 생년월일, 채널 URL 검증 로직 |
 
-#### 3. 인증 시스템 (`src/features/auth/`)
-- **위치**: `src/features/auth/`
-- **설명**: 사용자 인증 및 권한 관리
-- **구현 상태**: ✅ 완료
-- **주요 기능**:
-  - 사용자 역할 검증 (influencer)
-  - 인증 상태 관리
+---
 
-### 도메인별 모듈 (Domain Modules)
-
-#### 1. 인플루언서 프로필 페이지 (`src/app/(protected)/profiles/influencer/`)
-- **위치**: `src/app/(protected)/profiles/influencer/page.tsx`
-- **설명**: 인플루언서 정보 등록 UI
-- **구현 상태**: ✅ 완료
-- **주요 기능**:
-  - 생년월일 입력 폼
-  - SNS 채널 추가/편집/삭제
-  - 실시간 유효성 검사
-  - 프로필 저장/임시저장
-
-#### 2. 채널 관리 컴포넌트
-- **위치**: `src/app/(protected)/profiles/influencer/page.tsx` 내부
-- **설명**: SNS 채널 동적 관리
-- **구현 상태**: ✅ 완료
-- **주요 기능**:
-  - 채널 추가/삭제
-  - 채널 유형 선택 (naver, youtube, instagram, threads)
-  - URL 유효성 검사
-  - 중복 채널 방지
-
-### 공통 유틸리티 (Shared Utilities)
-
-#### 1. UI 컴포넌트 (`src/components/ui/`)
-- **위치**: `src/components/ui/`
-- **설명**: shadcn-ui 기반 재사용 가능한 UI 컴포넌트
-- **구현 상태**: ✅ 완료
-- **사용 컴포넌트**:
-  - `Card` - 프로필 카드
-  - `Button` - 액션 버튼
-  - `Input` - 입력 필드
-  - `Label` - 라벨
-  - `Select` - 드롭다운
-  - `Badge` - 상태 표시
-
-#### 2. HTTP 클라이언트 (`src/lib/remote/`)
-- **위치**: `src/lib/remote/`
-- **설명**: API 통신을 위한 HTTP 클라이언트
-- **구현 상태**: ✅ 완료
-
-#### 3. 상태 관리 (`src/features/auth/context/`)
-- **위치**: `src/features/auth/context/`
-- **설명**: 사용자 상태 및 권한 관리
-- **구현 상태**: ✅ 완료
-
-## Diagram
+## Architecture Diagram
 
 ```mermaid
 graph TB
     subgraph "Frontend Layer"
-        A[Influencer Profile Page] --> B[Channel Management]
-        A --> C[Form Validation]
-        A --> D[User Context]
-        
-        B --> E[Channel CRUD]
-        C --> F[Real-time Validation]
-        D --> G[Auth State]
-        
-        E --> H[API Client]
-        F --> H
-        G --> H
+        A[onboarding/influencer/page.tsx]
+        B[influencer-profile-form.tsx]
+        C[birth-date-input.tsx]
+        D[channel-input.tsx]
+        E[channel-list.tsx]
+        F[useCreateInfluencerProfile.ts]
     end
-    
+
+    subgraph "Shared Layer"
+        G[constants/channels.ts]
+        H[validation/birth-date.ts]
+        I[validation/channel-url.ts]
+        J[influencer-profile/lib/dto.ts]
+        K[influencer-profile/lib/validation.ts]
+    end
+
     subgraph "Backend Layer"
-        H --> I[Profile Routes]
-        I --> J[Profile Service]
-        J --> K[Database Operations]
-        
-        K --> L[(influencer_profiles)]
-        K --> M[(influencer_channels)]
-        K --> N[(users)]
+        L[backend/route.ts]
+        M[backend/schema.ts]
+        N[backend/service.ts]
+        O[backend/error.ts]
     end
-    
-    subgraph "Validation Layer"
-        O[Schema Validation]
-        P[Age Policy Check]
-        Q[URL Validation]
-        
-        O --> J
-        P --> J
-        Q --> J
+
+    subgraph "Database"
+        P[(influencer_profiles)]
+        Q[(influencer_channels)]
     end
-    
-    subgraph "Shared Modules"
-        R[Error Handling]
-        S[Response Utils]
-        T[Auth Middleware]
-        
-        R --> I
-        S --> I
-        T --> I
-    end
+
+    A --> B
+    B --> C
+    B --> D
+    B --> E
+    B --> F
+    B --> K
+    C --> H
+    D --> I
+    D --> G
+    E --> G
+    F --> J
+    K --> H
+    K --> I
+    J --> M
+    F --> L
+    L --> M
+    L --> N
+    L --> O
+    N --> P
+    N --> Q
+    N --> M
 ```
+
+---
 
 ## Implementation Plan
 
-### Phase 1: 백엔드 API (이미 완료)
+### 1. Shared Layer
 
-#### 1.1 프로필 API (`src/features/profiles/backend/`)
-- **구현 상태**: ✅ 완료
-- **주요 엔드포인트**:
-  - `POST /api/profiles/influencer` - 인플루언서 프로필 등록
-  - `GET /api/profiles/me` - 내 프로필 조회
-  - `PUT /api/profiles/influencer` - 인플루언서 프로필 수정
-- **Unit Tests**:
-  - [ ] 프로필 등록 성공 케이스
-  - [ ] 미성년자 가입 에러 케이스 (만 18세 미만)
-  - [ ] 중복 프로필 등록 에러 케이스
-  - [ ] 유효하지 않은 URL 형식 에러 케이스
-  - [ ] 권한 없는 사용자 에러 케이스 (advertiser 접근)
-  - [ ] 채널 최소 개수 검증 (1개 이상)
-  - [ ] 중복 채널 등록 에러 케이스
+#### 1.1. `src/constants/channels.ts`
 
-#### 1.2 검증 시스템 (`src/lib/validation/`)
-- **구현 상태**: ✅ 완료
-- **주요 검증 함수**:
-  - `validateAgePolicy()` - 나이 정책 검증
-  - `validateUrl()` - URL 형식 검증
-  - `influencerProfileSchema` - 프로필 스키마
-- **Unit Tests**:
-  - [ ] 나이 정책 검증 성공/실패 케이스
-  - [ ] URL 형식 검증 성공/실패 케이스
-  - [ ] 채널 배열 최소 개수 검증
-  - [ ] 채널 유형 enum 검증
+**목적**: 채널 유형 및 URL 패턴 정의
 
-### Phase 2: 프론트엔드 컴포넌트 (이미 완료)
-
-#### 2.1 인플루언서 프로필 페이지
-- **구현 상태**: ✅ 완료
-- **주요 기능**:
-  - 생년월일 입력 (날짜 선택기)
-  - SNS 채널 동적 추가/삭제
-  - 실시간 유효성 검사
-  - 프로필 저장/임시저장
-- **QA Sheet**:
-  - [ ] 생년월일 입력 및 나이 검증
-  - [ ] 채널 추가/삭제 기능
-  - [ ] 채널 유형 선택 (naver, youtube, instagram, threads)
-  - [ ] URL 유효성 검사 (실시간)
-  - [ ] 중복 채널 방지
-  - [ ] 최소 1개 채널 등록 필수
-  - [ ] 프로필 저장 성공/실패 처리
-  - [ ] 에러 메시지 표시
-  - [ ] 로딩 상태 표시
-
-#### 2.2 채널 관리 컴포넌트
-- **구현 상태**: ✅ 완료
-- **주요 기능**:
-  - 채널 추가 버튼
-  - 채널 삭제 버튼
-  - 채널 유형 드롭다운
-  - URL 입력 필드
-- **QA Sheet**:
-  - [ ] 채널 추가 시 폼 초기화
-  - [ ] 채널 삭제 시 확인 없이 즉시 삭제
-  - [ ] 채널 유형별 아이콘 표시
-  - [ ] URL 입력 시 실시간 검증
-  - [ ] 채널명 중복 검사
-  - [ ] 최대 채널 개수 제한 (선택사항)
-
-### Phase 3: 통합 테스트 및 최적화
-
-#### 3.1 E2E 테스트 시나리오
-- **인플루언서 회원가입 → 프로필 등록 → 체험단 지원** 플로우
-- **프로필 수정 → 채널 추가/삭제** 플로우
-- **에러 상황 처리** (미성년자, 중복 채널, 잘못된 URL)
-
-#### 3.2 성능 최적화
-- React Query를 통한 프로필 데이터 캐싱
-- 폼 상태 최적화 (불필요한 리렌더링 방지)
-- 이미지 최적화 (프로필 사진 업로드 시)
-
-#### 3.3 사용자 경험 개선
-- 자동 저장 기능 (임시저장)
-- 진행률 표시 (프로필 완성도)
-- 도움말 툴팁 (채널 등록 가이드)
-
-### Phase 4: 비동기 검증 시스템 (향후 확장)
-
-#### 4.1 채널 검증 워커
-- **목적**: 등록된 SNS 채널의 실제 존재 여부 검증
-- **구현 계획**:
-  - 백그라운드 작업 큐 시스템
-  - 각 플랫폼별 API 연동
-  - 검증 결과 데이터베이스 업데이트
-
-#### 4.2 검증 상태 관리
-- **검증 중**: 채널 검증 진행 중
-- **검증 완료**: 채널이 실제로 존재함
-- **검증 실패**: 채널이 존재하지 않거나 접근 불가
-
-## 결론
-
-인플루언서 정보 등록 기능이 이미 완전히 구현되어 있으며, 유스케이스 문서의 모든 요구사항을 충족합니다.
-
-**현재 상태**: ✅ 구현 완료
-- ✅ 생년월일 입력 및 나이 검증
-- ✅ SNS 채널 동적 관리
-- ✅ 실시간 유효성 검사
-- ✅ 프로필 저장/수정
-- ✅ 에러 처리 및 사용자 피드백
-
-**다음 단계**: 실제 데이터베이스 연동 테스트 및 사용자 시나리오 검증
-
-## 단순화된 최종 구조
-
-### 1. 핵심 기능만 유지
-- 회원가입/로그인 (기본 인증)
-- 체험단 목록/상세 (인플루언서용)
-- 체험단 관리 (광고주용)
-- 지원 관리
-
-### 2. 단순화된 파일 구조
-```
-src/
-├── app/
-│   ├── (auth)/
-│   │   ├── login/page.tsx
-│   │   └── signup/page.tsx
-│   ├── (protected)/
-│   │   ├── home/page.tsx (체험단 목록)
-│   │   ├── campaigns/
-│   │   │   ├── [id]/page.tsx (체험단 상세)
-│   │   │   └── [id]/apply/page.tsx (지원하기)
-│   │   ├── manage/page.tsx (광고주 체험단 관리)
-│   │   └── applications/page.tsx (내 지원 목록)
-│   └── api/
-│       └── [[...hono]]/route.ts
-├── components/
-│   └── ui/ (shadcn-ui 컴포넌트들)
-├── lib/
-│   ├── supabase/
-│   │   ├── client.ts
-│   │   └── types.ts
-│   └── utils.ts
-└── backend/
-    ├── hono/
-    │   ├── app.ts
-    │   └── context.ts
-    ├── middleware/
-    │   ├── error.ts
-    │   └── supabase.ts
-    └── http/
-        └── response.ts
-```
-
-### 3. 단순화된 API 구조
-```
-/api/
-├── auth/
-│   ├── login
-│   └── signup
-├── campaigns/
-│   ├── GET / (목록)
-│   ├── GET /:id (상세)
-│   ├── POST / (생성)
-│   └── PUT /:id/close (모집종료)
-├── applications/
-│   ├── POST / (지원)
-│   └── GET /my (내 지원목록)
-└── profiles/
-    ├── POST /influencer
-    └── POST /advertiser
-```
-
-### 4. 핵심 기능 구현
-
-#### A. 인증 시스템 (단순화)
+**구현 내용**:
 ```typescript
-// src/lib/auth.ts
-export const auth = {
-  signup: async (email: string, password: string, role: 'influencer' | 'advertiser') => {
-    const supabase = createClient()
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-    })
-    if (error) throw error
-    return data
-  },
-  
-  login: async (email: string, password: string) => {
-    const supabase = createClient()
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    })
-    if (error) throw error
-    return data
+// 채널 유형 정의
+export const CHANNEL_TYPES = {
+  NAVER: 'naver',
+  YOUTUBE: 'youtube',
+  INSTAGRAM: 'instagram',
+  THREADS: 'threads',
+} as const;
+
+// URL 패턴 정의
+export const CHANNEL_URL_PATTERNS = {
+  [CHANNEL_TYPES.NAVER]: /^https:\/\/blog\.naver\.com\/.+/,
+  [CHANNEL_TYPES.YOUTUBE]: /^https:\/\/(www\.youtube\.com\/@|www\.youtube\.com\/c\/).+/,
+  [CHANNEL_TYPES.INSTAGRAM]: /^https:\/\/www\.instagram\.com\/.+/,
+  [CHANNEL_TYPES.THREADS]: /^https:\/\/www\.threads\.net\/@.+/,
+} as const;
+
+// 채널 표시명
+export const CHANNEL_LABELS = {
+  [CHANNEL_TYPES.NAVER]: '네이버 블로그',
+  [CHANNEL_TYPES.YOUTUBE]: '유튜브',
+  [CHANNEL_TYPES.INSTAGRAM]: '인스타그램',
+  [CHANNEL_TYPES.THREADS]: '스레드',
+} as const;
+```
+
+**Unit Test**:
+- [ ] `CHANNEL_TYPES` 각 값이 유효한 문자열인지 확인
+- [ ] `CHANNEL_URL_PATTERNS` 각 패턴이 올바른 정규식인지 확인
+
+---
+
+#### 1.2. `src/lib/validation/birth-date.ts`
+
+**목적**: 생년월일 검증 로직
+
+**구현 내용**:
+```typescript
+import { differenceInYears } from 'date-fns';
+
+export const MIN_AGE = 14;
+
+export const validateBirthDate = (birthDate: string | Date): string | null => {
+  const date = typeof birthDate === 'string' ? new Date(birthDate) : birthDate;
+
+  if (isNaN(date.getTime())) {
+    return '올바른 날짜 형식이 아닙니다.';
   }
-}
-```
 
-#### B. 체험단 관리 (단순화)
-```typescript
-// src/lib/campaigns.ts
-export const campaigns = {
-  getList: async (filters?: { status?: string, search?: string }) => {
-    const supabase = createClient()
-    let query = supabase.from('campaigns').select('*')
-    
-    if (filters?.status) query = query.eq('status', filters.status)
-    if (filters?.search) query = query.ilike('title', `%${filters.search}%`)
-    
-    const { data, error } = await query
-    if (error) throw error
-    return data
-  },
-  
-  getById: async (id: string) => {
-    const supabase = createClient()
-    const { data, error } = await supabase
-      .from('campaigns')
-      .select('*')
-      .eq('id', id)
-      .single()
-    if (error) throw error
-    return data
-  },
-  
-  create: async (campaignData: any) => {
-    const supabase = createClient()
-    const { data, error } = await supabase
-      .from('campaigns')
-      .insert(campaignData)
-      .select()
-      .single()
-    if (error) throw error
-    return data
+  if (date > new Date()) {
+    return '생년월일은 오늘 이전 날짜여야 합니다.';
   }
-}
-```
 
-#### C. 지원 관리 (단순화)
-```typescript
-// src/lib/applications.ts
-export const applications = {
-  apply: async (campaignId: string, applicationData: any) => {
-    const supabase = createClient()
-    const { data, error } = await supabase
-      .from('applications')
-      .insert({
-        campaign_id: campaignId,
-        ...applicationData
-      })
-      .select()
-      .single()
-    if (error) throw error
-    return data
-  },
-  
-  getMyApplications: async () => {
-    const supabase = createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    
-    const { data, error } = await supabase
-      .from('applications')
-      .select(`
-        *,
-        campaigns (
-          title,
-          status
-        )
-      `)
-      .eq('influencer_id', user?.id)
-    if (error) throw error
-    return data
+  const age = differenceInYears(new Date(), date);
+  if (age < MIN_AGE) {
+    return `만 ${MIN_AGE}세 이상만 가입 가능합니다.`;
   }
-}
+
+  return null;
+};
+
+export const isValidBirthDate = (birthDate: string | Date): boolean => {
+  return validateBirthDate(birthDate) === null;
+};
 ```
 
-### 5. 단순화된 페이지 구조
+**Unit Test**:
+- [ ] 만 14세 이상인 경우 `null` 반환
+- [ ] 만 14세 미만인 경우 에러 메시지 반환
+- [ ] 미래 날짜인 경우 에러 메시지 반환
+- [ ] 잘못된 날짜 형식인 경우 에러 메시지 반환
 
-#### A. 홈페이지 (체험단 목록)
+---
+
+#### 1.3. `src/lib/validation/channel-url.ts`
+
+**목적**: 채널별 URL 패턴 검증
+
+**구현 내용**:
 ```typescript
-// src/app/(protected)/home/page.tsx
-'use client'
+import { CHANNEL_TYPES, CHANNEL_URL_PATTERNS } from '@/constants/channels';
+import type { ChannelType } from '@/constants/channels';
 
-import { useState, useEffect } from 'react'
-import { campaigns } from '@/lib/campaigns'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import Link from 'next/link'
+export const validateChannelUrl = (
+  channelType: ChannelType,
+  url: string,
+): string | null => {
+  const pattern = CHANNEL_URL_PATTERNS[channelType];
 
-export default function HomePage() {
-  const [campaignsList, setCampaignsList] = useState([])
-  const [loading, setLoading] = useState(true)
+  if (!pattern) {
+    return '지원하지 않는 채널 유형입니다.';
+  }
 
-  useEffect(() => {
-    const loadCampaigns = async () => {
-      try {
-        const data = await campaigns.getList({ status: 'recruiting' })
-        setCampaignsList(data)
-      } catch (error) {
-        console.error('Failed to load campaigns:', error)
-      } finally {
-        setLoading(false)
-      }
+  if (!pattern.test(url)) {
+    return `올바른 ${channelType} URL 형식이 아닙니다.`;
+  }
+
+  return null;
+};
+
+export const isValidChannelUrl = (
+  channelType: ChannelType,
+  url: string,
+): boolean => {
+  return validateChannelUrl(channelType, url) === null;
+};
+```
+
+**Unit Test**:
+- [ ] 네이버 블로그: `https://blog.naver.com/example` → 통과
+- [ ] 네이버 블로그: `https://blog.naver.com/` → 실패
+- [ ] 유튜브: `https://www.youtube.com/@example` → 통과
+- [ ] 유튜브: `https://www.youtube.com/c/example` → 통과
+- [ ] 유튜브: `https://www.youtube.com/watch?v=xxx` → 실패
+- [ ] 인스타그램: `https://www.instagram.com/example` → 통과
+- [ ] 스레드: `https://www.threads.net/@example` → 통과
+
+---
+
+### 2. Backend Layer
+
+#### 2.1. `src/features/influencer-profile/backend/error.ts`
+
+**목적**: 에러 코드 정의
+
+**구현 내용**:
+```typescript
+export const influencerProfileErrorCodes = {
+  invalidInput: 'INFLUENCER_PROFILE_INVALID_INPUT',
+  databaseError: 'INFLUENCER_PROFILE_DATABASE_ERROR',
+  profileAlreadyExists: 'INFLUENCER_PROFILE_ALREADY_EXISTS',
+  invalidBirthDate: 'INFLUENCER_PROFILE_INVALID_BIRTH_DATE',
+  invalidChannelUrl: 'INFLUENCER_PROFILE_INVALID_CHANNEL_URL',
+  minChannelRequired: 'INFLUENCER_PROFILE_MIN_CHANNEL_REQUIRED',
+  duplicateChannelUrl: 'INFLUENCER_PROFILE_DUPLICATE_CHANNEL_URL',
+} as const;
+
+type InfluencerProfileErrorValue = (typeof influencerProfileErrorCodes)[keyof typeof influencerProfileErrorCodes];
+
+export type InfluencerProfileServiceError = InfluencerProfileErrorValue;
+```
+
+---
+
+#### 2.2. `src/features/influencer-profile/backend/schema.ts`
+
+**목적**: 요청/응답 Zod 스키마 정의
+
+**구현 내용**:
+```typescript
+import { z } from 'zod';
+import { CHANNEL_TYPES } from '@/constants/channels';
+
+// 채널 입력 스키마
+export const ChannelInputSchema = z.object({
+  channelType: z.enum([
+    CHANNEL_TYPES.NAVER,
+    CHANNEL_TYPES.YOUTUBE,
+    CHANNEL_TYPES.INSTAGRAM,
+    CHANNEL_TYPES.THREADS,
+  ]),
+  channelName: z.string().min(1, '채널명을 입력해주세요.').max(255),
+  channelUrl: z.string().url('올바른 URL 형식이 아닙니다.'),
+});
+
+export type ChannelInput = z.infer<typeof ChannelInputSchema>;
+
+// 요청 스키마
+export const CreateInfluencerProfileRequestSchema = z.object({
+  userId: z.string().uuid('올바른 사용자 ID가 아닙니다.'),
+  birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '올바른 날짜 형식이 아닙니다.'),
+  channels: z.array(ChannelInputSchema).min(1, '최소 1개 이상의 채널을 등록해주세요.'),
+});
+
+export type CreateInfluencerProfileRequest = z.infer<typeof CreateInfluencerProfileRequestSchema>;
+
+// 응답 스키마
+export const CreateInfluencerProfileResponseSchema = z.object({
+  profileId: z.string().uuid(),
+  message: z.string(),
+});
+
+export type CreateInfluencerProfileResponse = z.infer<typeof CreateInfluencerProfileResponseSchema>;
+```
+
+**Unit Test**:
+- [ ] 유효한 요청 데이터 파싱 성공
+- [ ] 빈 채널 배열인 경우 실패
+- [ ] 잘못된 UUID인 경우 실패
+- [ ] 잘못된 날짜 형식인 경우 실패
+
+---
+
+#### 2.3. `src/features/influencer-profile/backend/service.ts`
+
+**목적**: 프로필 생성 및 채널 저장 비즈니스 로직
+
+**구현 내용**:
+```typescript
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { failure, success, type HandlerResult } from '@/backend/http/response';
+import type { CreateInfluencerProfileRequest, CreateInfluencerProfileResponse } from './schema';
+import { influencerProfileErrorCodes, type InfluencerProfileServiceError } from './error';
+import { validateBirthDate } from '@/lib/validation/birth-date';
+import { validateChannelUrl } from '@/lib/validation/channel-url';
+
+const INFLUENCER_PROFILES_TABLE = 'influencer_profiles';
+const INFLUENCER_CHANNELS_TABLE = 'influencer_channels';
+
+// 1. 프로필 존재 확인
+export const checkProfileExists = async (
+  client: SupabaseClient,
+  userId: string,
+): Promise<HandlerResult<boolean, InfluencerProfileServiceError, unknown>> => {
+  const { data, error } = await client
+    .from(INFLUENCER_PROFILES_TABLE)
+    .select('id')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) {
+    return failure(500, influencerProfileErrorCodes.databaseError, error.message);
+  }
+
+  return success(data !== null);
+};
+
+// 2. 생년월일 검증
+const validateBirthDateInput = (birthDate: string): string | null => {
+  return validateBirthDate(new Date(birthDate));
+};
+
+// 3. 채널 URL 중복 확인
+const checkDuplicateChannelUrls = (channels: CreateInfluencerProfileRequest['channels']): boolean => {
+  const urls = channels.map(c => c.channelUrl);
+  return new Set(urls).size !== urls.length;
+};
+
+// 4. 프로필 생성
+export const createInfluencerProfile = async (
+  client: SupabaseClient,
+  profileData: CreateInfluencerProfileRequest,
+): Promise<HandlerResult<CreateInfluencerProfileResponse, InfluencerProfileServiceError, unknown>> => {
+  // 1. 생년월일 검증
+  const birthDateError = validateBirthDateInput(profileData.birthDate);
+  if (birthDateError) {
+    return failure(400, influencerProfileErrorCodes.invalidBirthDate, birthDateError);
+  }
+
+  // 2. 채널 URL 패턴 검증
+  for (const channel of profileData.channels) {
+    const urlError = validateChannelUrl(channel.channelType, channel.channelUrl);
+    if (urlError) {
+      return failure(400, influencerProfileErrorCodes.invalidChannelUrl, urlError);
     }
-    loadCampaigns()
-  }, [])
+  }
 
-  if (loading) return <div>Loading...</div>
+  // 3. 중복 채널 URL 확인
+  if (checkDuplicateChannelUrls(profileData.channels)) {
+    return failure(400, influencerProfileErrorCodes.duplicateChannelUrl, '이미 등록된 채널이 있습니다.');
+  }
+
+  // 4. 프로필 존재 확인
+  const existsResult = await checkProfileExists(client, profileData.userId);
+  if (!existsResult.ok) {
+    return existsResult as HandlerResult<CreateInfluencerProfileResponse, InfluencerProfileServiceError, unknown>;
+  }
+  if (existsResult.data) {
+    return failure(400, influencerProfileErrorCodes.profileAlreadyExists, '이미 프로필이 등록되어 있습니다.');
+  }
+
+  // 5. influencer_profiles 테이블에 프로필 생성
+  const { data: profileRow, error: profileError } = await client
+    .from(INFLUENCER_PROFILES_TABLE)
+    .insert({
+      user_id: profileData.userId,
+      birth_date: profileData.birthDate,
+      is_verified: false,
+    })
+    .select('id')
+    .single();
+
+  if (profileError || !profileRow) {
+    return failure(
+      500,
+      influencerProfileErrorCodes.databaseError,
+      profileError?.message ?? 'influencer_profiles 테이블 생성에 실패했습니다.',
+    );
+  }
+
+  const profileId = profileRow.id;
+
+  // 6. influencer_channels 테이블에 채널 저장
+  const channelRecords = profileData.channels.map(channel => ({
+    influencer_id: profileId,
+    channel_type: channel.channelType,
+    channel_name: channel.channelName,
+    channel_url: channel.channelUrl,
+    verification_status: 'pending' as const,
+  }));
+
+  const { error: channelsError } = await client
+    .from(INFLUENCER_CHANNELS_TABLE)
+    .insert(channelRecords);
+
+  if (channelsError) {
+    // Rollback은 복잡하므로 로그만 남기고 진행
+    console.error('Failed to save channels:', channelsError.message);
+  }
+
+  return success({
+    profileId,
+    message: '인플루언서 정보가 등록되었습니다.',
+  });
+};
+```
+
+**Unit Test**:
+- [ ] 유효한 프로필 데이터로 생성 성공
+- [ ] 만 14세 미만인 경우 실패 (invalidBirthDate)
+- [ ] 잘못된 채널 URL 형식인 경우 실패 (invalidChannelUrl)
+- [ ] 중복 채널 URL인 경우 실패 (duplicateChannelUrl)
+- [ ] 이미 프로필이 존재하는 경우 실패 (profileAlreadyExists)
+- [ ] 데이터베이스 에러 시 실패 (databaseError)
+
+---
+
+#### 2.4. `src/features/influencer-profile/backend/route.ts`
+
+**목적**: Hono 라우터 정의
+
+**구현 내용**:
+```typescript
+import type { Hono } from 'hono';
+import { failure, respond, type ErrorResult } from '@/backend/http/response';
+import { getLogger, getSupabase, type AppEnv } from '@/backend/hono/context';
+import { CreateInfluencerProfileRequestSchema } from './schema';
+import { createInfluencerProfile } from './service';
+import { type InfluencerProfileServiceError } from './error';
+
+export const registerInfluencerProfileRoutes = (app: Hono<AppEnv>) => {
+  app.post('/influencer/profile', async (c) => {
+    const body = await c.req.json();
+    const parsedBody = CreateInfluencerProfileRequestSchema.safeParse(body);
+
+    if (!parsedBody.success) {
+      return respond(
+        c,
+        failure(
+          400,
+          'INVALID_INFLUENCER_PROFILE_REQUEST',
+          '입력값이 올바르지 않습니다.',
+          parsedBody.error.format(),
+        ),
+      );
+    }
+
+    const supabase = getSupabase(c);
+    const logger = getLogger(c);
+
+    const result = await createInfluencerProfile(supabase, parsedBody.data);
+
+    if (!result.ok) {
+      const errorResult = result as ErrorResult<InfluencerProfileServiceError, unknown>;
+      logger.error('Influencer profile creation failed', { error: errorResult.error.code });
+    } else {
+      logger.info('Influencer profile created successfully', { profileId: result.data.profileId });
+    }
+
+    return respond(c, result);
+  });
+};
+```
+
+---
+
+### 3. Frontend Layer
+
+#### 3.1. `src/features/influencer-profile/lib/dto.ts`
+
+**목적**: 백엔드 스키마를 프론트엔드에서 재사용
+
+**구현 내용**:
+```typescript
+export {
+  ChannelInputSchema,
+  CreateInfluencerProfileRequestSchema,
+  CreateInfluencerProfileResponseSchema,
+  type ChannelInput,
+  type CreateInfluencerProfileRequest,
+  type CreateInfluencerProfileResponse,
+} from '../backend/schema';
+```
+
+---
+
+#### 3.2. `src/features/influencer-profile/lib/validation.ts`
+
+**목적**: 클라이언트 측 검증 함수
+
+**구현 내용**:
+```typescript
+import { validateBirthDate } from '@/lib/validation/birth-date';
+import { validateChannelUrl } from '@/lib/validation/channel-url';
+import type { ChannelType } from '@/constants/channels';
+
+export const validateBirthDateInput = (birthDate: string): string | null => {
+  if (!birthDate) {
+    return '생년월일을 입력해주세요.';
+  }
+  return validateBirthDate(new Date(birthDate));
+};
+
+export const validateChannelUrlInput = (channelType: ChannelType, url: string): string | null => {
+  if (!url) {
+    return 'URL을 입력해주세요.';
+  }
+  return validateChannelUrl(channelType, url);
+};
+
+export const validateChannelName = (name: string): string | null => {
+  if (!name || name.trim().length === 0) {
+    return '채널명을 입력해주세요.';
+  }
+  if (name.length > 255) {
+    return '채널명은 255자 이하여야 합니다.';
+  }
+  return null;
+};
+```
+
+**QA Sheet**:
+- [ ] 생년월일 미입력 시 에러 메시지 표시
+- [ ] 채널 URL 미입력 시 에러 메시지 표시
+- [ ] 채널명 미입력 시 에러 메시지 표시
+- [ ] 채널명 255자 초과 시 에러 메시지 표시
+
+---
+
+#### 3.3. `src/features/influencer-profile/hooks/useCreateInfluencerProfile.ts`
+
+**목적**: React Query 훅
+
+**구현 내용**:
+```typescript
+import { useMutation } from '@tanstack/react-query';
+import { apiClient } from '@/lib/remote/api-client';
+import type { CreateInfluencerProfileRequest, CreateInfluencerProfileResponse } from '../lib/dto';
+
+export const useCreateInfluencerProfile = () => {
+  return useMutation({
+    mutationFn: async (data: CreateInfluencerProfileRequest) => {
+      const response = await apiClient.post<CreateInfluencerProfileResponse>(
+        '/influencer/profile',
+        data,
+      );
+      return response;
+    },
+  });
+};
+```
+
+**QA Sheet**:
+- [ ] 성공 시 `profileId`와 `message` 반환
+- [ ] 실패 시 에러 메시지 표시
+
+---
+
+#### 3.4. `src/features/influencer-profile/components/birth-date-input.tsx`
+
+**목적**: 생년월일 입력 컴포넌트
+
+**구현 내용**:
+```typescript
+"use client";
+
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+
+type BirthDateInputProps = {
+  value: string;
+  onChange: (value: string) => void;
+  error?: string;
+};
+
+export const BirthDateInput = ({ value, onChange, error }: BirthDateInputProps) => {
+  return (
+    <div className="flex flex-col gap-2">
+      <Label htmlFor="birthDate">
+        생년월일 <span className="text-rose-500">*</span>
+      </Label>
+      <Input
+        id="birthDate"
+        type="date"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      {error && <p className="text-sm text-rose-500">{error}</p>}
+    </div>
+  );
+};
+```
+
+**QA Sheet**:
+- [ ] 날짜 선택 시 `onChange` 호출
+- [ ] 에러 메시지 표시
+- [ ] 필수 표시 (`*`) 렌더링
+
+---
+
+#### 3.5. `src/features/influencer-profile/components/channel-input.tsx`
+
+**목적**: 채널 입력 폼 컴포넌트
+
+**구현 내용**:
+```typescript
+"use client";
+
+import { useState } from "react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { CHANNEL_TYPES, CHANNEL_LABELS } from "@/constants/channels";
+import type { ChannelInput } from "../lib/dto";
+import { validateChannelName, validateChannelUrlInput } from "../lib/validation";
+import type { ChannelType } from "@/constants/channels";
+
+type ChannelInputProps = {
+  onAdd: (channel: ChannelInput) => void;
+};
+
+export const ChannelInputComponent = ({ onAdd }: ChannelInputProps) => {
+  const [channelType, setChannelType] = useState<ChannelType | null>(null);
+  const [channelName, setChannelName] = useState("");
+  const [channelUrl, setChannelUrl] = useState("");
+  const [errors, setErrors] = useState<{ name?: string; url?: string; type?: string }>({});
+
+  const handleAdd = () => {
+    const newErrors: { name?: string; url?: string; type?: string } = {};
+
+    if (!channelType) {
+      newErrors.type = "채널 유형을 선택해주세요.";
+    }
+
+    const nameError = validateChannelName(channelName);
+    if (nameError) newErrors.name = nameError;
+
+    if (channelType) {
+      const urlError = validateChannelUrlInput(channelType, channelUrl);
+      if (urlError) newErrors.url = urlError;
+    }
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return;
+    }
+
+    onAdd({ channelType: channelType!, channelName, channelUrl });
+    setChannelType(null);
+    setChannelName("");
+    setChannelUrl("");
+    setErrors({});
+  };
 
   return (
-    <div className="container mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-8">체험단 목록</h1>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {campaignsList.map((campaign) => (
-          <Card key={campaign.id}>
-            <CardHeader>
-              <CardTitle>{campaign.title}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-gray-600 mb-4">{campaign.description}</p>
-              <div className="flex justify-between items-center">
-                <span className="text-sm text-gray-500">
-                  {campaign.max_participants}명 모집
-                </span>
-                <Link href={`/campaigns/${campaign.id}`}>
-                  <Button>자세히 보기</Button>
-                </Link>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+    <div className="flex flex-col gap-4 border p-4 rounded">
+      <div className="flex flex-col gap-2">
+        <Label>채널 유형 <span className="text-rose-500">*</span></Label>
+        <Select value={channelType || ""} onValueChange={(value) => setChannelType(value as ChannelType)}>
+          <SelectTrigger>
+            <SelectValue placeholder="채널 유형 선택" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={CHANNEL_TYPES.NAVER}>{CHANNEL_LABELS[CHANNEL_TYPES.NAVER]}</SelectItem>
+            <SelectItem value={CHANNEL_TYPES.YOUTUBE}>{CHANNEL_LABELS[CHANNEL_TYPES.YOUTUBE]}</SelectItem>
+            <SelectItem value={CHANNEL_TYPES.INSTAGRAM}>{CHANNEL_LABELS[CHANNEL_TYPES.INSTAGRAM]}</SelectItem>
+            <SelectItem value={CHANNEL_TYPES.THREADS}>{CHANNEL_LABELS[CHANNEL_TYPES.THREADS]}</SelectItem>
+          </SelectContent>
+        </Select>
+        {errors.type && <p className="text-sm text-rose-500">{errors.type}</p>}
       </div>
+
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="channelName">채널명 <span className="text-rose-500">*</span></Label>
+        <Input
+          id="channelName"
+          type="text"
+          value={channelName}
+          onChange={(e) => setChannelName(e.target.value)}
+          placeholder="채널명을 입력해주세요"
+        />
+        {errors.name && <p className="text-sm text-rose-500">{errors.name}</p>}
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="channelUrl">채널 URL <span className="text-rose-500">*</span></Label>
+        <Input
+          id="channelUrl"
+          type="url"
+          value={channelUrl}
+          onChange={(e) => setChannelUrl(e.target.value)}
+          placeholder="https://..."
+        />
+        {errors.url && <p className="text-sm text-rose-500">{errors.url}</p>}
+      </div>
+
+      <Button type="button" onClick={handleAdd} variant="secondary">
+        채널 추가
+      </Button>
     </div>
-  )
-}
+  );
+};
 ```
 
-#### B. 체험단 상세 페이지
+**QA Sheet**:
+- [ ] 채널 유형 선택 가능
+- [ ] 채널명 입력 가능
+- [ ] 채널 URL 입력 가능
+- [ ] "채널 추가" 버튼 클릭 시 검증 후 `onAdd` 호출
+- [ ] 검증 실패 시 에러 메시지 표시
+- [ ] 채널 추가 후 입력 폼 초기화
+
+---
+
+#### 3.6. `src/features/influencer-profile/components/channel-list.tsx`
+
+**목적**: 채널 리스트 관리 컴포넌트
+
+**구현 내용**:
 ```typescript
-// src/app/(protected)/campaigns/[id]/page.tsx
-'use client'
+"use client";
 
-import { useState, useEffect } from 'react'
-import { campaigns } from '@/lib/campaigns'
-import { applications } from '@/lib/applications'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import Link from 'next/link'
+import { Button } from "@/components/ui/button";
+import { CHANNEL_LABELS } from "@/constants/channels";
+import type { ChannelInput } from "../lib/dto";
 
-export default function CampaignDetailPage({ params }: { params: { id: string } }) {
-  const [campaign, setCampaign] = useState(null)
-  const [loading, setLoading] = useState(true)
+type ChannelListProps = {
+  channels: ChannelInput[];
+  onRemove: (index: number) => void;
+};
 
-  useEffect(() => {
-    const loadCampaign = async () => {
-      try {
-        const data = await campaigns.getById(params.id)
-        setCampaign(data)
-      } catch (error) {
-        console.error('Failed to load campaign:', error)
-      } finally {
-        setLoading(false)
-      }
-    }
-    loadCampaign()
-  }, [params.id])
-
-  const handleApply = async () => {
-    try {
-      await applications.apply(params.id, {
-        motivation: '체험단에 참여하고 싶습니다!',
-        planned_visit_date: new Date().toISOString().split('T')[0]
-      })
-      alert('지원이 완료되었습니다!')
-    } catch (error) {
-      console.error('Failed to apply:', error)
-      alert('지원에 실패했습니다.')
-    }
+export const ChannelList = ({ channels, onRemove }: ChannelListProps) => {
+  if (channels.length === 0) {
+    return (
+      <div className="text-sm text-gray-500">
+        등록된 채널이 없습니다. 최소 1개 이상의 채널을 추가해주세요.
+      </div>
+    );
   }
 
-  if (loading) return <div>Loading...</div>
-  if (!campaign) return <div>Campaign not found</div>
+  return (
+    <div className="flex flex-col gap-2">
+      {channels.map((channel, index) => (
+        <div key={index} className="flex items-center justify-between border p-3 rounded">
+          <div className="flex flex-col gap-1">
+            <p className="font-medium">{CHANNEL_LABELS[channel.channelType]}</p>
+            <p className="text-sm text-gray-600">{channel.channelName}</p>
+            <p className="text-xs text-gray-400 truncate max-w-md">{channel.channelUrl}</p>
+          </div>
+          <Button type="button" variant="destructive" size="sm" onClick={() => onRemove(index)}>
+            삭제
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
+};
+```
+
+**QA Sheet**:
+- [ ] 채널 목록이 비어있을 때 안내 메시지 표시
+- [ ] 채널 정보 (유형, 이름, URL) 표시
+- [ ] "삭제" 버튼 클릭 시 `onRemove` 호출
+
+---
+
+#### 3.7. `src/features/influencer-profile/components/influencer-profile-form.tsx`
+
+**목적**: 메인 폼 컴포넌트
+
+**구현 내용**:
+```typescript
+"use client";
+
+import { useCallback, useState } from "react";
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { BirthDateInput } from "./birth-date-input";
+import { ChannelInputComponent } from "./channel-input";
+import { ChannelList } from "./channel-list";
+import { useCreateInfluencerProfile } from "../hooks/useCreateInfluencerProfile";
+import { validateBirthDateInput } from "../lib/validation";
+import type { ChannelInput } from "../lib/dto";
+
+type InfluencerProfileFormProps = {
+  userId: string;
+};
+
+export const InfluencerProfileForm = ({ userId }: InfluencerProfileFormProps) => {
+  const router = useRouter();
+  const [birthDate, setBirthDate] = useState("");
+  const [channels, setChannels] = useState<ChannelInput[]>([]);
+  const [errors, setErrors] = useState<{ birthDate?: string; channels?: string }>({});
+  const { mutate, isPending, error: mutationError } = useCreateInfluencerProfile();
+
+  const handleAddChannel = useCallback((channel: ChannelInput) => {
+    // 중복 URL 확인
+    setChannels((prev) => {
+      if (prev.some((c) => c.channelUrl === channel.channelUrl)) {
+        setErrors((e) => ({ ...e, channels: "이미 등록된 채널입니다." }));
+        return prev;
+      }
+      setErrors((e) => ({ ...e, channels: undefined }));
+      return [...prev, channel];
+    });
+  }, []);
+
+  const handleRemoveChannel = useCallback((index: number) => {
+    setChannels((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const validate = useCallback((): boolean => {
+    const newErrors: { birthDate?: string; channels?: string } = {};
+
+    const birthDateError = validateBirthDateInput(birthDate);
+    if (birthDateError) newErrors.birthDate = birthDateError;
+
+    if (channels.length === 0) {
+      newErrors.channels = "최소 1개 이상의 채널을 등록해주세요.";
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  }, [birthDate, channels]);
+
+  const handleSubmit = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+
+      if (!validate()) return;
+
+      mutate(
+        {
+          userId,
+          birthDate,
+          channels,
+        },
+        {
+          onSuccess: () => {
+            router.push("/campaigns");
+          },
+        },
+      );
+    },
+    [birthDate, channels, mutate, router, userId, validate],
+  );
 
   return (
-    <div className="container mx-auto px-4 py-8">
-      <Card>
-        <CardHeader>
-          <CardTitle>{campaign.title}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            <p>{campaign.description}</p>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <h3 className="font-semibold">모집 기간</h3>
-                <p>{new Date(campaign.recruitment_start_date).toLocaleDateString()} ~ {new Date(campaign.recruitment_end_date).toLocaleDateString()}</p>
-              </div>
-              <div>
-                <h3 className="font-semibold">모집 인원</h3>
-                <p>{campaign.max_participants}명</p>
-              </div>
-            </div>
-            <div>
-              <h3 className="font-semibold">제공 혜택</h3>
-              <p>{campaign.benefits}</p>
-            </div>
-            <div>
-              <h3 className="font-semibold">미션</h3>
-              <p>{campaign.mission}</p>
-            </div>
-            {campaign.status === 'recruiting' && (
-              <Button onClick={handleApply} className="w-full">
-                지원하기
-              </Button>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+    <form onSubmit={handleSubmit} className="flex flex-col gap-6">
+      <BirthDateInput
+        value={birthDate}
+        onChange={setBirthDate}
+        error={errors.birthDate}
+      />
+
+      <div className="flex flex-col gap-4">
+        <h3 className="font-medium">SNS 채널 관리</h3>
+        <ChannelInputComponent onAdd={handleAddChannel} />
+        <ChannelList channels={channels} onRemove={handleRemoveChannel} />
+        {errors.channels && <p className="text-sm text-rose-500">{errors.channels}</p>}
+      </div>
+
+      {mutationError && (
+        <p className="text-sm text-rose-500">{mutationError.message}</p>
+      )}
+
+      <Button type="submit" disabled={isPending} className="w-full">
+        {isPending ? "등록 중..." : "제출"}
+      </Button>
+    </form>
+  );
+};
+```
+
+**QA Sheet**:
+- [ ] 생년월일 입력 가능
+- [ ] 채널 추가 가능
+- [ ] 채널 삭제 가능
+- [ ] 중복 채널 URL 추가 시 에러 메시지 표시
+- [ ] 생년월일 미입력 시 제출 불가
+- [ ] 채널 0개 시 제출 불가
+- [ ] 제출 성공 시 체험단 목록 페이지로 리디렉션
+- [ ] 제출 실패 시 에러 메시지 표시
+
+---
+
+#### 3.8. `src/app/onboarding/influencer/page.tsx`
+
+**목적**: 인플루언서 온보딩 페이지
+
+**구현 내용**:
+```typescript
+"use client";
+
+import { InfluencerProfileForm } from "@/features/influencer-profile/components/influencer-profile-form";
+
+export default async function OnboardingInfluencerPage() {
+  // TODO: 실제로는 세션에서 userId를 가져와야 함
+  const userId = "temporary-user-id";
+
+  return (
+    <div className="container max-w-2xl mx-auto py-8">
+      <h1 className="text-2xl font-bold mb-6">인플루언서 정보 등록</h1>
+      <p className="text-gray-600 mb-8">
+        체험단에 지원하기 위해 인플루언서 정보를 등록해주세요.
+      </p>
+      <InfluencerProfileForm userId={userId} />
     </div>
-  )
+  );
 }
 ```
 
-### 6. 단순화된 백엔드 (Hono)
+**QA Sheet**:
+- [ ] 페이지 제목 표시
+- [ ] 안내 문구 표시
+- [ ] 인플루언서 프로필 폼 렌더링
+- [ ] 세션에서 `userId` 가져오기 (TODO)
 
+---
+
+### 4. Integration
+
+#### 4.1. Hono App 라우터 등록
+
+**파일**: `src/backend/hono/app.ts`
+
+**변경 내용**:
 ```typescript
-// src/backend/hono/app.ts
-import { Hono } from 'hono'
-import { cors } from 'hono/cors'
-import { createClient } from '@supabase/supabase-js'
+import { registerInfluencerProfileRoutes } from '@/features/influencer-profile/backend/route';
 
-const app = new Hono()
+// ...
 
-app.use('*', cors())
-
-// 체험단 목록
-app.get('/campaigns', async (c) => {
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  )
-  
-  const { data, error } = await supabase
-    .from('campaigns')
-    .select('*')
-    .eq('status', 'recruiting')
-  
-  if (error) return c.json({ error: error.message }, 500)
-  return c.json({ data })
-})
-
-// 체험단 상세
-app.get('/campaigns/:id', async (c) => {
-  const id = c.req.param('id')
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  )
-  
-  const { data, error } = await supabase
-    .from('campaigns')
-    .select('*')
-    .eq('id', id)
-    .single()
-  
-  if (error) return c.json({ error: error.message }, 500)
-  return c.json({ data })
-})
-
-// 체험단 생성
-app.post('/campaigns', async (c) => {
-  const body = await c.req.json()
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  )
-  
-  const { data, error } = await supabase
-    .from('campaigns')
-    .insert(body)
-    .select()
-    .single()
-  
-  if (error) return c.json({ error: error.message }, 500)
-  return c.json({ data })
-})
-
-export default app
+registerInfluencerProfileRoutes(app);
 ```
 
-### 7. 핵심 데이터베이스 테이블 (최소한)
+---
 
-```sql
--- 사용자 테이블
-CREATE TABLE users (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  auth_user_id UUID UNIQUE NOT NULL,
-  name VARCHAR(100) NOT NULL,
-  email VARCHAR(255) UNIQUE NOT NULL,
-  role VARCHAR(20) NOT NULL CHECK (role IN ('advertiser', 'influencer')),
-  created_at TIMESTAMP DEFAULT NOW()
-);
+## Testing Checklist
 
--- 체험단 테이블
-CREATE TABLE campaigns (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  advertiser_id UUID NOT NULL REFERENCES users(id),
-  title VARCHAR(200) NOT NULL,
-  description TEXT,
-  benefits TEXT NOT NULL,
-  mission TEXT NOT NULL,
-  max_participants INTEGER NOT NULL,
-  status VARCHAR(20) DEFAULT 'recruiting' CHECK (status IN ('recruiting', 'closed', 'completed')),
-  created_at TIMESTAMP DEFAULT NOW()
-);
+### Backend Unit Tests
+- [ ] `src/constants/channels.ts`: 채널 유형 및 패턴 검증
+- [ ] `src/lib/validation/birth-date.ts`: 생년월일 검증
+- [ ] `src/lib/validation/channel-url.ts`: 채널 URL 검증
+- [ ] `src/features/influencer-profile/backend/schema.ts`: 요청/응답 스키마 파싱
+- [ ] `src/features/influencer-profile/backend/service.ts`: 프로필 생성 로직
 
--- 지원 테이블
-CREATE TABLE applications (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  campaign_id UUID NOT NULL REFERENCES campaigns(id),
-  influencer_id UUID NOT NULL REFERENCES users(id),
-  motivation TEXT NOT NULL,
-  status VARCHAR(20) DEFAULT 'applied' CHECK (status IN ('applied', 'selected', 'rejected')),
-  applied_at TIMESTAMP DEFAULT NOW(),
-  UNIQUE(campaign_id, influencer_id)
-);
-```
+### Frontend QA
+- [ ] `src/features/influencer-profile/lib/validation.ts`: 클라이언트 검증
+- [ ] `src/features/influencer-profile/components/birth-date-input.tsx`: 생년월일 입력
+- [ ] `src/features/influencer-profile/components/channel-input.tsx`: 채널 입력
+- [ ] `src/features/influencer-profile/components/channel-list.tsx`: 채널 리스트
+- [ ] `src/features/influencer-profile/components/influencer-profile-form.tsx`: 메인 폼
+- [ ] `src/app/onboarding/influencer/page.tsx`: 온보딩 페이지
 
-### 8. 최종 구현 순서
+### Integration Tests
+- [ ] API 엔드포인트 `/influencer/profile` 호출 성공
+- [ ] 프로필 생성 후 DB에 정상 저장
+- [ ] 채널 목록 DB에 정상 저장
+- [ ] 에러 케이스 처리 (만 14세 미만, 중복 URL 등)
 
-1. **기본 인증 시스템** (회원가입/로그인)
-2. **체험단 목록/상세 페이지** (인플루언서용)
-3. **체험단 관리 페이지** (광고주용)
-4. **지원 기능** (지원하기/지원목록)
-5. **기본 스타일링** (Tailwind CSS)
+---
 
-이렇게 단순화하면 핵심 기능만 남기고 복잡한 모듈 구조를 제거할 수 있습니다. 각 기능은 독립적으로 작동하며, 필요에 따라 점진적으로 확장할 수 있습니다.
+## Edge Cases Handling
+
+| Edge Case | Handling |
+|-----------|----------|
+| E1. 나이 제한 미달 | `validateBirthDate`에서 만 14세 미만 검증 → 400 에러 |
+| E2. 생년월일 미래 날짜 | `validateBirthDate`에서 미래 날짜 검증 → 400 에러 |
+| E3. URL 형식 오류 | `validateChannelUrl`에서 패턴 검증 → 실시간 에러 메시지 표시 |
+| E4. 최소 채널 수 미충족 | `CreateInfluencerProfileRequestSchema`에서 `.min(1)` 검증 |
+| E5. 중복 채널 URL | `checkDuplicateChannelUrls`에서 검증 → 400 에러 |
+| E6. 채널 검증 실패 | (Optional) 비동기 검증 작업 예약 (향후 구현) |
+| E7. 임시저장 실패 | (Optional) 로컬 스토리지 활용 (향후 구현) |
+
+---
+
+## Future Enhancements
+
+1. **비동기 채널 검증**: 채널 실제 존재 여부 확인 (Optional)
+2. **임시저장 기능**: 로컬 스토리지 활용 (Optional)
+3. **프로필 수정 기능**: 등록 후 수정 가능하도록 (BR7)
+4. **세션 관리**: 실제 사용자 세션에서 `userId` 추출
+5. **체험단 지원 가드**: 인플루언서 프로필 등록 여부 확인 (BR8)

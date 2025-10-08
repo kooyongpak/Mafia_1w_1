@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run type-check:*)",
+      "Bash(npm run:*)",
+      "Bash(curl -X POST http://localhost:3000/api/signup -H \"Content-Type: application/json\" -d \"{\"\"name\"\":\"\"test\"\",\"\"phone\"\":\"\"010-1234-5678\"\",\"\"email\"\":\"\"test@test.com\"\",\"\"password\"\":\"\"12345678\"\",\"\"role\"\":\"\"influencer\"\",\"\"agreements\"\":[{\"\"type\"\":\"\"terms_of_service\"\",\"\"agreed\"\":true},{\"\"type\"\":\"\"privacy_policy\"\",\"\"agreed\"\":true}]}\")",
+      "Bash(npx tsc:*)",
+      "Bash(timeout:*)",
+      "Bash(taskkill:*)",
+      "Bash(curl -X POST http://localhost:3003/api/signup -H \"Content-Type: application/json\" -d \"{\"\"name\"\":\"\"테스트\"\",\"\"phone\"\":\"\"010-1234-5678\"\",\"\"email\"\":\"\"test@example.com\"\",\"\"password\"\":\"\"testpass123\"\",\"\"role\"\":\"\"influencer\"\",\"\"agreements\"\":[{\"\"type\"\":\"\"terms_of_service\"\",\"\"agreed\"\":true},{\"\"type\"\":\"\"privacy_policy\"\",\"\"agreed\"\":true}]}\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
