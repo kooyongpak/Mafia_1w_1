@@ -14,7 +14,7 @@ import type { CampaignSort } from '@/constants/campaigns';
 export const CampaignList = () => {
   const [category, setCategory] = useState<string | undefined>();
   const [sort, setSort] = useState<CampaignSort>(CAMPAIGN_SORT.LATEST);
-  const [page, setPage] = useState(PAGINATION_DEFAULTS.DEFAULT_PAGE);
+  const [page, setPage] = useState<number>(PAGINATION_DEFAULTS.DEFAULT_PAGE);
 
   const { data, isLoading, error } = useCampaigns({
     status: CAMPAIGN_STATUS.RECRUITING,

@@ -21,3 +21,23 @@ export const PAGINATION_DEFAULTS = {
   MAX_PAGES: 100,
 } as const;
 
+export const STATUS_BADGE_VARIANTS = {
+  recruiting: { variant: 'default' as const, label: '모집중' },
+  closed: { variant: 'secondary' as const, label: '모집종료' },
+  completed: { variant: 'outline' as const, label: '완료' },
+} as const;
+
+export const APPLICATION_STATUS = {
+  PENDING: 'pending',
+  SELECTED: 'selected',
+  REJECTED: 'rejected',
+} as const;
+
+export type ApplicationStatus = (typeof APPLICATION_STATUS)[keyof typeof APPLICATION_STATUS];
+
+export const APPLICATION_STATUS_LABELS = {
+  pending: '대기중',
+  selected: '선정',
+  rejected: '반려',
+} as const;
+

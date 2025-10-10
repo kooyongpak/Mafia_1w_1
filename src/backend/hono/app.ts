@@ -7,6 +7,7 @@ import { registerSignupRoutes } from '@/features/signup/backend/route';
 import { registerInfluencerProfileRoutes } from '@/features/influencer-profile/backend/route';
 import { registerAdvertiserProfileRoutes } from '@/features/advertiser-profile/backend/route';
 import { registerCampaignRoutes } from '@/features/campaigns/backend/route';
+import { registerApplicationRoutes } from '@/features/applications/backend/route';
 import type { AppEnv } from '@/backend/hono/context';
 
 let singletonApp: Hono<AppEnv> | null = null;
@@ -27,6 +28,7 @@ export const createHonoApp = () => {
   registerInfluencerProfileRoutes(app);
   registerAdvertiserProfileRoutes(app);
   registerCampaignRoutes(app);
+  registerApplicationRoutes(app);
 
   console.log('Hono routes registered:', {
     exampleRoutes: true,
@@ -34,6 +36,7 @@ export const createHonoApp = () => {
     influencerProfileRoutes: true,
     advertiserProfileRoutes: true,
     campaignRoutes: true,
+    applicationRoutes: true,
   });
 
   if (process.env.NODE_ENV === 'production') {

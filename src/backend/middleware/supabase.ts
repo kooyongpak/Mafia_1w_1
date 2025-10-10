@@ -3,7 +3,7 @@ import {
   contextKeys,
   type AppEnv,
 } from '@/backend/hono/context';
-import { createServiceClient } from '@/backend/supabase/client';
+import { createServerClient } from '@/backend/supabase/client';
 
 export const withSupabase = () =>
   createMiddleware<AppEnv>(async (c, next) => {
@@ -15,7 +15,9 @@ export const withSupabase = () =>
       throw new Error('Application configuration is not available.');
     }
 
-    const client = createServiceClient(config.supabase);
+    // Use createServerClient instead of createServiceClient
+    // This allows reading the auth session from cookies
+    const client = createServerClient(config.supabase, c);
 
     c.set(contextKeys.supabase, client);
 

@@ -67,7 +67,6 @@ export const createInfluencerProfile = async (
     .insert({
       user_id: profileData.userId,
       birth_date: profileData.birthDate,
-      is_verified: false,
     })
     .select('id')
     .single();

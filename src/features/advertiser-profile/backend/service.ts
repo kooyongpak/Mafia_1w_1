@@ -47,7 +47,7 @@ export const createAdvertiserProfile = async (
   const { data: user, error: userError } = await client
     .from(USERS_TABLE)
     .select('id, role')
-    .eq('id', profileData.userId)
+    .eq('auth_user_id', profileData.userId)
     .maybeSingle();
 
   if (userError) {
@@ -62,7 +62,7 @@ export const createAdvertiserProfile = async (
     return failure(400, advertiserProfileErrorCodes.invalidInput, '광고주 역할이 아닙니다.');
   }
 
-  const profileExistsResult = await checkProfileExists(client, profileData.userId);
+  const profileExistsResult = await checkProfileExists(client, user.id);
 
   if (!profileExistsResult.ok) {
     return profileExistsResult as HandlerResult<CreateAdvertiserProfileResponse, AdvertiserProfileServiceError, unknown>;
@@ -96,12 +96,11 @@ export const createAdvertiserProfile = async (
   const { data: profile, error: profileError } = await client
     .from(ADVERTISER_PROFILES_TABLE)
     .insert({
-      user_id: profileData.userId,
+      user_id: user.id,
       company_name: profileData.companyName,
       location: profileData.location,
       category: profileData.category,
       business_registration_number: profileData.businessRegistrationNumber,
-      is_verified: false,
     })
     .select('id')
     .single();

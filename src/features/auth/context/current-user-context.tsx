@@ -37,20 +37,33 @@ export const CurrentUserProvider = ({
     try {
       const result = await supabase.auth.getUser();
 
-      const nextSnapshot = match(result)
-        .with({ data: { user: P.nonNullable } }, ({ data }) => ({
+      if (result.data.user) {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('role')
+          .eq('id', result.data.user.id)
+          .single<{ role: 'influencer' | 'advertiser' | null }>();
+
+        const role = userData?.role ?? null;
+
+        const nextSnapshot: CurrentUserSnapshot = {
           status: "authenticated" as const,
           user: {
-            id: data.user.id,
-            email: data.user.email,
-            appMetadata: data.user.app_metadata ?? {},
-            userMetadata: data.user.user_metadata ?? {},
+            id: result.data.user.id,
+            email: result.data.user.email,
+            appMetadata: result.data.user.app_metadata ?? {},
+            userMetadata: result.data.user.user_metadata ?? {},
+            role,
           },
-        }))
-        .otherwise(() => ({ status: "unauthenticated" as const, user: null }));
+        };
 
-      setSnapshot(nextSnapshot);
-      queryClient.setQueryData(["currentUser"], nextSnapshot);
+        setSnapshot(nextSnapshot);
+        queryClient.setQueryData(["currentUser"], nextSnapshot);
+      } else {
+        const nextSnapshot: CurrentUserSnapshot = { status: "unauthenticated" as const, user: null };
+        setSnapshot(nextSnapshot);
+        queryClient.setQueryData(["currentUser"], nextSnapshot);
+      }
     } catch (error) {
       const fallbackSnapshot: CurrentUserSnapshot = {
         status: "unauthenticated",
