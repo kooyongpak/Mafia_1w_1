@@ -5,9 +5,12 @@
 
 BEGIN;
 
+<<<<<<< HEAD
 -- 필요한 확장 설치: gen_random_uuid() 사용을 위해 pgcrypto 확장 보장
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
+=======
+>>>>>>> 403f1691ebd54146ee6879fd0ea25fc8ccceff07
 -- ============================================================
 -- Helper: updated_at 자동 업데이트 트리거 함수
 -- ============================================================
@@ -24,9 +27,15 @@ $$ LANGUAGE plpgsql;
 -- ============================================================
 
 -- users 테이블
+<<<<<<< HEAD
 CREATE TABLE IF NOT EXISTS public.users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   auth_user_id UUID UNIQUE NOT NULL,
+=======
+CREATE TABLE IF NOT EXISTS users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  auth_id UUID UNIQUE NOT NULL,
+>>>>>>> 403f1691ebd54146ee6879fd0ea25fc8ccceff07
   name VARCHAR(100) NOT NULL,
   phone VARCHAR(20) NOT NULL,
   email VARCHAR(255) UNIQUE NOT NULL,
@@ -35,8 +44,13 @@ CREATE TABLE IF NOT EXISTS public.users (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+<<<<<<< HEAD
 CREATE INDEX IF NOT EXISTS idx_users_supabase_auth_id ON public.users(auth_user_id);
 CREATE INDEX IF NOT EXISTS idx_users_role ON public.users(role);
+=======
+CREATE INDEX IF NOT EXISTS idx_users_auth_id ON users(auth_id);
+CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+>>>>>>> 403f1691ebd54146ee6879fd0ea25fc8ccceff07
 
 -- users updated_at 트리거
 DROP TRIGGER IF EXISTS set_timestamp_users ON users;
@@ -54,13 +68,18 @@ CREATE TABLE IF NOT EXISTS user_agreements (
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   agreement_type VARCHAR(50) NOT NULL,
   agreed BOOLEAN NOT NULL DEFAULT FALSE,
+<<<<<<< HEAD
   agreed_at TIMESTAMPTZ DEFAULT NOW(),
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
+=======
+  agreed_at TIMESTAMPTZ DEFAULT NOW()
+>>>>>>> 403f1691ebd54146ee6879fd0ea25fc8ccceff07
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_agreements_user_id ON user_agreements(user_id);
 
+<<<<<<< HEAD
 -- 기존 환경 호환: 누락된 타임스탬프 컬럼 보강
 ALTER TABLE IF EXISTS user_agreements
   ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
@@ -74,6 +93,8 @@ CREATE TRIGGER set_timestamp_user_agreements
   FOR EACH ROW
   EXECUTE FUNCTION trigger_set_timestamp();
 
+=======
+>>>>>>> 403f1691ebd54146ee6879fd0ea25fc8ccceff07
 -- RLS 비활성화
 ALTER TABLE user_agreements DISABLE ROW LEVEL SECURITY;
 
@@ -218,6 +239,7 @@ CREATE TABLE IF NOT EXISTS applications (
   CONSTRAINT unique_application UNIQUE(campaign_id, user_id)
 );
 
+<<<<<<< HEAD
 -- 기존 환경 호환: 누락된 핵심 컬럼 및 제약/인덱스 보강 (테이블이 이미 있을 수 있음)
 ALTER TABLE IF EXISTS applications
   ADD COLUMN IF NOT EXISTS user_id UUID;
@@ -255,6 +277,8 @@ BEGIN
 END $$;
 
 -- 컬럼/제약 보강 후 인덱스 생성 (컬럼이 존재하는 상태 보장)
+=======
+>>>>>>> 403f1691ebd54146ee6879fd0ea25fc8ccceff07
 CREATE INDEX IF NOT EXISTS idx_applications_user_id ON applications(user_id);
 CREATE INDEX IF NOT EXISTS idx_applications_campaign_id ON applications(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status);
@@ -270,6 +294,7 @@ CREATE TRIGGER set_timestamp_applications
 -- RLS 비활성화
 ALTER TABLE applications DISABLE ROW LEVEL SECURITY;
 
+<<<<<<< HEAD
 -- ============================================================
 -- 개발 환경: 모든 미인증 계정 자동 인증 처리
 -- ============================================================
@@ -279,6 +304,8 @@ UPDATE auth.users
 SET email_confirmed_at = NOW()
 WHERE email_confirmed_at IS NULL;
 
+=======
+>>>>>>> 403f1691ebd54146ee6879fd0ea25fc8ccceff07
 COMMIT;
 
 -- ============================================================
